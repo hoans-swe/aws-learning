@@ -134,3 +134,54 @@ markmap:
 - A **failed stage stops the pipeline**; the console shows which action failed and why.
 - Pipeline **can't perform an action** → check the pipeline's **IAM service role** has the permissions (IAM policy).
 - **AWS CloudTrail** audits the CodePipeline **API calls** (who changed or started the pipeline).
+
+## AWS CodeBuild
+
+### Overview
+
+- **Fully managed CI service**: compiles code, runs tests, produces packages (zip, jar, Docker image…).
+- **Serverless builds**: no build servers to manage, scales on its own → **no build queue**, builds run in parallel.
+- **Pay per build minute** (compute time of each build); alternative to self-hosted **Jenkins**.
+- Every build runs in a fresh **Docker container** → reproducible builds.
+    - **Managed images** with ready runtimes: Java, Python, Node.js, Go, Ruby, PHP, .NET, Android…
+    - **Custom image** (e.g. from ECR) for any other toolchain.
+- **Sources**: CodeCommit, S3, GitHub, GitHub Enterprise, Bitbucket, GitLab.
+- **Build project**: the build's settings (source, image, role, buildspec); define it in CodeBuild, or from a CodePipeline build action.
+
+### How It Works
+
+- ![How CodeBuild runs a build: the developer pushes to the CodeCommit repo; CodeBuild starts a container from a managed or ECR build image, takes the source and buildspec.yml, uploads artifacts to an S3 bucket, saves and restores an optional cache in S3, and sends build logs to CloudWatch Logs or S3](../images/CodeBuildHowItWorks.png)
+- Source + **buildspec.yml** → container from the **build image** → runs the commands → **artifacts** to S3.
+- **Cache** in S3 (optional): reuse dependencies between builds → faster builds.
+- **Logs** → **CloudWatch Logs** and / or **S3**.
+- Build instructions: a `buildspec.yml` in the repo, or typed into the project in the console.
+
+### buildspec.yml
+
+- ![buildspec.yml for an orders-api Node.js project: env sets variables, a Parameter Store value and a Secrets Manager secret; the install, pre_build, build and post_build phases run in order; afterwards artifacts (app.zip) go to S3 encrypted with KMS and the cache (node_modules) is saved to S3 for the next build](../images/CodeBuildBuildspec.png)
+- Must be at the **root** of the source code (another name or path can be set in the project).
+- `env`: environment variables.
+    - `variables`: plain text values.
+    - `parameter-store`: values from **SSM Parameter Store**.
+    - `secrets-manager`: values from **Secrets Manager** → no secrets in the repo.
+- `phases`: commands, run in this order.
+    - `install`: install tools and dependencies.
+    - `pre_build`: last setup before building (e.g. log in to ECR).
+    - `build`: the real build and tests.
+    - `post_build`: finishing touches (e.g. zip the output, push an image).
+    - A failed `install` / `pre_build` ends the build; after a failed `build`, `post_build` still runs (AWS docs, not on the slides).
+- `artifacts`: files to upload to **S3**, encrypted with **KMS**.
+- `cache`: paths saved to **S3** (usually dependencies) → next builds are faster.
+
+### Security & Monitoring
+
+- **Security**
+    - **IAM service role**: what the build can access (S3, ECR, Parameter Store…).
+    - **KMS**: encrypts the build artifacts.
+    - **VPC**: run the build inside your VPC to reach private resources (RDS, internal APIs).
+    - **CloudTrail**: logs the CodeBuild API calls.
+- **Monitoring**
+    - **CloudWatch Logs / S3**: build output logs.
+    - **CloudWatch Metrics**: build statistics (builds, failures, duration).
+    - **EventBridge**: rule on a **failed build** → notify (SNS, Lambda).
+    - **CloudWatch Alarms**: alert when failures cross a **threshold**.
