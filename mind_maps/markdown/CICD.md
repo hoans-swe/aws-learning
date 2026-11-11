@@ -237,3 +237,36 @@ markmap:
     - **Manual**: start it yourself.
     - Or **disable rollbacks** for a deployment.
 - A rollback is a **new deployment** of the last known good revision (new deployment ID), **not a restore** of the old one.
+
+## AWS CodeArtifact
+
+### Overview
+
+- **Artifact management**: storing and serving the packages your code depends on (and the ones you publish).
+- Managed, secure, scalable **private package repository** → no Nexus / Artifactory server to run yourself.
+- Works with the usual tools: **npm, yarn, pip, twine, Maven, Gradle, NuGet**.
+- **Developers and CodeBuild** install dependencies **from CodeArtifact** instead of the public registries.
+
+### How It Works
+
+- ![CodeArtifact: inside the domain acme, the repo public-store has an external connection to npmjs, PyPI or Maven Central and is the upstream of the repo team-deps; developers install and CodeBuild fetches from team-deps; the platform team publishes and approves packages](../images/CodeArtifactHowItWorks.png)
+- **Domain**: groups the repositories of an organisation; packages are stored once per domain.
+- **Repository**: holds packages (any supported format); can live in your **VPC** (private endpoints).
+- **Upstream repository**: a repo can pull missing packages from another repo.
+- **External connection**: a repo **proxies and caches** a public registry (npmjs, PyPI, Maven Central…).
+    - The public package stays available even if it is removed upstream.
+- **Publish / approve**: your team publishes internal packages and controls which versions are allowed.
+
+### EventBridge Integration
+
+- ![CodeArtifact sends an event to an EventBridge rule when a package version is created, updated or deleted; the rule invokes Lambda, starts Step Functions, notifies SNS, queues to SQS or starts CodePipeline to rebuild and redeploy with the patched package](../images/CodeArtifactEventBridge.png)
+- An **event** is emitted when a **package version** is **created, modified or deleted**.
+- EventBridge targets: **Lambda**, **Step Functions**, **SNS**, **SQS**, **CodePipeline**…
+- E.g. a patched library version → start **CodePipeline** → rebuild and redeploy apps with the security fix.
+
+### Resource Policy
+
+- **Repository resource policy**: lets **another AWS account** (or a specific IAM user / role) use the repository.
+- Access is **all or nothing**: a principal can read **all** packages of the repo or **none** (no per-package permission).
+- Typical read actions: `codeartifact:ReadFromRepository`, `ListPackages`, `DescribePackageVersion`, `GetRepositoryEndpoint`.
+- The other account's principal also needs IAM permissions on its side (cross-account = both sides allow).
