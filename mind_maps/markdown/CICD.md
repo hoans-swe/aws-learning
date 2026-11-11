@@ -185,3 +185,55 @@ markmap:
     - **CloudWatch Metrics**: build statistics (builds, failures, duration).
     - **EventBridge**: rule on a **failed build** → notify (SNS, Lambda).
     - **CloudWatch Alarms**: alert when failures cross a **threshold**.
+
+## AWS CodeDeploy
+
+### Overview
+
+- **Automates deployments** of new app versions, gradually, with **automatic rollback**.
+- **appspec.yml**: describes how to deploy (what to copy where, which scripts / hooks to run).
+- Compute platforms and the deployment types each supports:
+    - **EC2 / on-premises**: **in-place** or **blue/green** (blue/green on EC2 only, not on-premises servers).
+    - **Lambda**: blue/green only, by **shifting traffic** between versions of an alias.
+    - **ECS**: blue/green only, a new **task definition** behind an ALB.
+- **Rollback** when the deployment fails or a **CloudWatch alarm** fires.
+
+### EC2 / On-premises
+
+- ![CodeDeploy on EC2 or on-premises: the CodeDeploy agent on the instances of a deployment group polls CodeDeploy for work, receives the deployment and its configuration, and downloads the revision (app.zip + appspec.yml) from S3 using the instance profile's s3:Get* and s3:List* permissions; Systems Manager can install and update the agent](../images/CodeDeployAgent.png)
+- **CodeDeploy agent** must run on every target instance (prerequisite).
+    - **Systems Manager** can install it and keep it updated.
+    - The agent downloads the **revision** (bundle) from **S3** → the instance profile needs `s3:Get*` / `s3:List*`.
+- **Deployment group**: the target instances, chosen by **tags** or an **Auto Scaling group**.
+- **Deployment configurations** (in-place speed vs availability):
+    - ![In-place deployment configurations on 4 EC2 instances: AllAtOnce updates all four at once so none is serving; HalfAtATime updates two then two so two are serving; OneAtATime updates one by one so three are serving; Custom sets the minimum healthy hosts, e.g. 75%](../images/CodeDeployInPlaceConfigs.png)
+    - `AllAtOnce`: fastest, **downtime**.
+    - `HalfAtATime`: **50%** capacity during the deployment.
+    - `OneAtATime`: slowest, **least** impact on availability.
+    - **Custom**: set your own minimum healthy hosts (%).
+- **Hooks**: scripts run at each lifecycle step → verify the deployment after each phase.
+- **Deploy to an ASG**
+    - ![CodeDeploy blue/green on EC2 with an Auto Scaling group: before, the ALB sends 100% of traffic to the blue ASG with v1; CodeDeploy creates a green copy of the ASG and deploys v2 to it, reroutes the ALB to the green instances, then terminates the blue instances after the chosen wait](../images/CodeDeployBlueGreenASG.png)
+    - **In-place**: updates the existing instances; instances the ASG launches later **also get the current version** automatically.
+    - **Blue/green**: CodeDeploy creates a **new ASG** (settings copied), deploys v2, switches the **load balancer** to it.
+        - You choose how long to **keep the old instances** before they are terminated.
+        - **Needs an ELB** to move the traffic.
+
+### Lambda & ECS (traffic shifting)
+
+- ![Traffic shifting to v2 over time: AllAtOnce sends 100% immediately, Canary10Percent5Minutes sends 10% for 5 minutes then 100%, Linear10PercentEvery3Minutes adds 10% every 3 minutes and reaches 100% at 27 minutes; config names start with Lambda or ECS](../images/CodeDeployTrafficShifting.png)
+- **Lambda**: shifts the traffic of an **alias** (e.g. `prod`) from the old version to the new one; built into **SAM**.
+- **ECS**: deploys a new **task definition** to a **green target group**, then shifts the **ALB** (required) from blue to green.
+- Shifting patterns (names start with `Lambda…` or `ECS…`):
+    - **Linear**: +X% every N minutes until 100%, e.g. `LambdaLinear10PercentEvery3Minutes`, `ECSLinear10PercentEvery10Minutes`.
+    - **Canary**: X% first, then **100%** after N minutes, e.g. `LambdaCanary10Percent5Minutes`, `ECSCanary10Percent30Minutes`.
+    - **AllAtOnce**: 100% immediately.
+- A CloudWatch alarm during the shift → traffic goes back to the old version.
+
+### Redeploy & Rollbacks
+
+- **Rollback** = deploy an **earlier revision** again.
+    - **Automatic**: when the deployment **fails**, or a **CloudWatch alarm** threshold is met.
+    - **Manual**: start it yourself.
+    - Or **disable rollbacks** for a deployment.
+- A rollback is a **new deployment** of the last known good revision (new deployment ID), **not a restore** of the old one.
