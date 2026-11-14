@@ -736,6 +736,98 @@ markmap:
     - Identity sources can be CUP, social IdPs, SAML, etc..
     - Access controlled via IAM roles/policies assigned based on identity.
 
+## AWS SAM
+
+### Overview
+
+- **SAM = Serverless Application Model**: a framework to **build and deploy serverless apps** (Lambda, API Gateway, DynamoDB, …).
+- Two parts:
+    - **Template**: YAML, a **shorthand on top of CloudFormation**.
+    - **SAM CLI**: `sam build`, `sam deploy`, `sam sync`, `sam local …`.
+- A few lines of SAM → CloudFormation expands them into **many resources** (IAM role, versions, alias, API stage, permissions).
+- Everything CloudFormation has still works: `Parameters`, `Mappings`, `Conditions`, `Outputs`, plain `AWS::…` resources.
+- Built in: deploy Lambda **safely with CodeDeploy**, run Lambda and API Gateway **locally**.
+
+### Template
+
+- ![SAM transform: a 20-line template.yaml with an OrdersFunction (Api event GET /orders, DynamoDBCrudPolicy, AutoPublishAlias live) and an OrdersTable SimpleTable expands into 9 CloudFormation resources: Lambda function, IAM role, version, alias, REST API, deployment and stage, Lambda permission and DynamoDB table](../images/SAMTransform.png)
+- **Transform header** marks the file as SAM: `Transform: AWS::Serverless-2016-10-31`.
+- Main resource types:
+    - `AWS::Serverless::Function` → Lambda function + IAM role (+ triggers from `Events`).
+    - `AWS::Serverless::Api` → API Gateway REST API (created implicitly when a function has an `Api` event).
+    - `AWS::Serverless::SimpleTable` → DynamoDB table with **one primary key** only (need a sort key or indexes → use `AWS::DynamoDB::Table`).
+    - Also: `AWS::Serverless::HttpApi`, `AWS::Serverless::StateMachine`, `AWS::Serverless::LayerVersion`.
+- **Globals** section: shared properties for all functions (runtime, timeout, memory, environment).
+
+### Build & Deploy
+
+- ![SAM deployment: on your machine the developer writes template.yaml and src/, sam build puts code and dependencies in .aws-sam/build; sam deploy zips and uploads them to an S3 bucket, creates and executes a change set, and CloudFormation expands the SAM transform and creates Lambda, API Gateway and DynamoDB in the orders-api stack](../images/SAMDeployment.png)
+- `sam build` (local): installs dependencies, copies code + template into `.aws-sam/build`.
+- `sam deploy`:
+    - **Packages**: zips the code, uploads it to **S3**, rewrites `CodeUri` to the S3 location (`sam package` does only this step; `sam deploy` already includes it).
+    - Creates and executes a CloudFormation **change set** → stack.
+    - `sam deploy --guided`: asks for stack name, Region, … and saves the answers in `samconfig.toml`.
+- The **transform runs in CloudFormation**, not on your machine → the stack shows the expanded resources.
+
+### SAM Accelerate (sam sync)
+
+- ![SAM Accelerate: a template change goes from the developer through a CloudFormation change set to Lambda (minutes); a code-only change with sam sync --code calls the Lambda API directly (seconds); sam sync --watch picks the path](../images/SAMSync.png)
+- Goal: **faster dev loop** → push changes to AWS in seconds instead of waiting for a full deploy.
+- `sam sync`: syncs **code + infrastructure** (infra changes still go through CloudFormation).
+- `sam sync --code`: **code only** → calls service APIs directly (e.g. update Lambda code), **skips CloudFormation**.
+    - `--resource AWS::Serverless::Function`: all functions (and their dependencies) only.
+    - `--resource-id OrdersFunction`: one resource only.
+- `sam sync --watch`: watches local files and syncs on save:
+    - Template changed → full `sam sync`.
+    - Only code changed → `sam sync --code`.
+- **Dev stacks only**: code synced around CloudFormation makes the stack **drift** → use `sam deploy` (or a pipeline) for prod.
+
+### Policy Templates
+
+- Ready-made **IAM permissions for a function**, scoped to one resource → no hand-written policy JSON.
+- Use under `Policies:` of the function, with the resource as a parameter: `- DynamoDBCrudPolicy: {TableName: !Ref OrdersTable}`.
+- Common ones:
+    - `S3ReadPolicy`: **read** objects in one bucket.
+    - `SQSPollerPolicy`: **poll** (receive / delete messages) one queue.
+    - `DynamoDBCrudPolicy`: **CRUD** = create, read, update, delete items in one table.
+    - `DynamoDBReadPolicy`, `SNSPublishMessagePolicy`, `SQSSendMessagePolicy`, `LambdaInvokePolicy`, …
+- Full list: [AWS SAM policy templates](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-policy-templates.html).
+
+### SAM and CodeDeploy
+
+- ![SAM and CodeDeploy: sam deploy starts CodeDeploy, which (1) invokes the PreTraffic hook to test v2, (2) shifts the live alias from v1 to v2 step by step, (3) invokes the PostTraffic hook to test v2 again, and rolls back when a CloudWatch alarm fires](../images/SAMCodeDeploy.png)
+- SAM uses **CodeDeploy natively** to release new Lambda code **gradually** (no CodeDeploy setup by hand).
+- Properties on `AWS::Serverless::Function`:
+    - `AutoPublishAlias: live`: on new code → **publish a new version** and point the alias `live` at it.
+    - `DeploymentPreference`:
+        - `Type`: **Canary**, **Linear** or **AllAtOnce**, e.g. `Canary10Percent5Minutes`, `Linear10PercentEvery1Minute`.
+        - `Alarms`: CloudWatch alarms (e.g. errors on the alias) → alarm fires = **automatic rollback** to the old version.
+        - `Hooks`: `PreTraffic` / `PostTraffic` Lambda functions that **test** the new version before the shift starts and after it ends.
+- A hook must report back to CodeDeploy (`PutLifecycleEventHookExecutionStatus`: `Succeeded` / `Failed`); `Failed` → rollback.
+- Traffic shifting configurations in detail → CI/CD mind map, AWS CodeDeploy.
+
+### Local Capabilities
+
+- ![SAM local: on your laptop with Docker, tests call sam local start-lambda on port 3001, a browser or curl calls sam local start-api on localhost:3000 which runs OrdersFunction, and the developer runs sam local generate-event to create s3-put.json and sam local invoke -e to send it; the function reaches real DynamoDB with the credentials of --profile](../images/SAMLocal.png)
+- Needs **Docker**: each function runs in a container that imitates the Lambda runtime.
+- `sam local start-lambda`: local endpoint that **emulates the Lambda service** → automated tests call it with the AWS SDK / CLI.
+- `sam local invoke`: run a function **once** with a payload, then exit → good for test cases.
+- `sam local start-api`: local **HTTP server** (API Gateway) for all functions with `Api` events; code changes are picked up without restart.
+- `sam local generate-event`: create **sample event payloads** (S3, API Gateway, SNS, SQS, Kinesis, DynamoDB, …).
+    - e.g. `sam local generate-event s3 put --bucket orders-uploads --key order.json > s3-put.json`, then `sam local invoke OrdersFunction -e s3-put.json`.
+- Local code that calls **real** AWS services (DynamoDB, S3, …) uses your credentials → pick the account with `--profile`.
+- DynamoDB itself is **not** emulated by SAM → use **DynamoDB Local** (separate Docker image) for a fully offline setup.
+
+### Multiple Environments
+
+- ![SAM multiple environments: the developer keeps template.yaml and samconfig.toml; sam deploy --config-env dev creates the orders-api-dev stack and sam deploy --config-env prod creates the orders-api-prod stack, each with Lambda, API Gateway and DynamoDB](../images/SAMMultipleEnvironments.png)
+- **`samconfig.toml`**: saved CLI options, grouped per **environment** and per **command**:
+    - `[dev.deploy.parameters]`: `stack_name`, `s3_bucket` / `s3_prefix`, `region`, `capabilities`, `parameter_overrides` (e.g. `Stage=dev`).
+    - `[prod.deploy.parameters]`: same keys, prod values.
+    - `[dev.sync.parameters]`: e.g. `watch = true` for fast dev syncs.
+- `sam deploy --config-env dev` / `--config-env prod` → **one template, separate stacks** per environment.
+- Without `--config-env` → the `default` environment.
+
 ## Serverless Solution Architectures
 
 ### Mobile App (TodoList Example)
