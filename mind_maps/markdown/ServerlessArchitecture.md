@@ -720,21 +720,122 @@ markmap:
 
 ## Amazon Cognito
 
-- **Definition**: Provides identity management for web and mobile applications. Handles user authentication, authorization, and user management. Scales to millions of users.
-- **Cognito vs. IAM**: Use Cognito for application users (external), IAM for AWS resources/users/roles (internal).
+### Overview
 
-### Components
+- Gives **users of your web / mobile app** an identity (sign-up, sign-in), not AWS users.
+- Two parts:
+    - **User Pools (CUP)**: sign-in for app users → tokens; integrates with **API Gateway** and **ALB**.
+    - **Identity Pools (CIP, Federated Identities)**: give users **temporary AWS credentials** → call AWS services directly; can use a User Pool as the identity provider.
+- **Cognito vs IAM**:
+    - IAM: people and services **inside** your AWS account.
+    - Cognito: **app users outside** AWS; exam hints → "hundreds / millions of users", "mobile users", "sign in with SAML / Google / Facebook".
 
-- **Cognito User Pools (CUP)**
-    - Acts as a user directory.
-    - Provides sign-up/sign-in functionality (username/password, social IdPs like Facebook/Google/Apple, SAML, OpenID Connect).
-    - Features: Email/phone verification, MFA, password reset.
-    - Integrates with API Gateway & ALB for backend authentication.
-- **Cognito Identity Pools (Federated Identities)**
-    - Provides temporary AWS credentials to authenticated users.
-    - Allows users to access AWS resources directly (e.g., user-specific S3 folder).
-    - Identity sources can be CUP, social IdPs, SAML, etc..
-    - Access controlled via IAM roles/policies assigned based on identity.
+### User Pools: Features
+
+- ![Cognito User Pool: the Orders web or mobile app signs up and signs in against the user pool and gets ID, access and refresh tokens (JWT) back; the pool stores users, groups and attributes and can federate the login to Google, Facebook, Apple, Amazon, a corporate SAML IdP or an OIDC provider](../images/CognitoUserPool.png)
+- **Serverless user directory** for web and mobile apps (users, groups, custom attributes).
+- Sign-in with **username or email + password**; **password reset**.
+- **Email and phone verification**; **MFA** (SMS, authenticator app, email).
+- **Federation**: sign in with Google, Facebook, Apple, Amazon, **SAML** or **OIDC** IdPs; the user still ends up in the pool.
+- **Compromised credentials protection**: block a sign-in when the password was leaked elsewhere.
+- A successful sign-in returns **JWT tokens** (ID, access, refresh).
+
+### User Pools: Integrations
+
+- ![User Pool integrations: a mobile app signs in to the user pool for a JWT, calls API Gateway with the token in a header, API Gateway verifies it with the Cognito authorizer and invokes the Lambda backend; browser users call an ALB with an HTTPS listener, the authenticate-cognito action sends them to the user pool to log in, and the ALB forwards the request with user claims to ECS, EC2 or Lambda targets](../images/CognitoUserPoolIntegrations.png)
+- **API Gateway**: **Cognito authorizer** checks the token the client sends in a header → no auth code in the backend.
+- **ALB**: `authenticate-cognito` action on an **HTTPS listener** → ALB runs the login, then forwards to the targets (details below).
+
+### User Pools: Lambda Triggers
+
+- ![User Pool Lambda triggers: in sign-up, pre sign-up accepts or denies and can auto-confirm, custom message changes the verification text, post confirmation sends a welcome message or adds the user to a database; in sign-in, pre authentication accepts or denies, post authentication logs analytics, pre token generation changes token claims; plus user migration from an old user store and custom authentication challenges](../images/CognitoLambdaTriggers.png)
+- Cognito **calls the Lambda function synchronously** at fixed points in the flow and waits for its answer.
+- **Sign-up**:
+    - **Pre sign-up**: accept / deny the sign-up, auto-confirm or auto-verify.
+    - **Post confirmation**: welcome message, write the user to your database, log analytics.
+    - **User migration**: user not found → check the old user store and create the user in the pool on the fly.
+- **Sign-in (authentication)**:
+    - **Pre authentication**: accept / deny the sign-in (custom checks).
+    - **Post authentication**: logging, custom analytics.
+    - **Pre token generation**: add, remove or change **claims** in the tokens (e.g. add a tenant ID).
+- **Messages**: **Custom message** → customize and localize verification / MFA / reset messages.
+- Also: **custom authentication challenge** triggers (own sign-in steps, e.g. passwordless) and custom email / SMS senders.
+
+### User Pools: Hosted UI
+
+- **Hosted UI** (now called **managed login**): ready-made sign-up / sign-in pages hosted by Cognito → no login screens to build.
+- Includes buttons for **social, SAML and OIDC** logins.
+- Branding: **custom logo and CSS**.
+- **Domain** (set in **App integration**):
+    - Cognito domain: `https://<prefix>.auth.<region>.amazoncognito.com`.
+    - **Custom domain** (e.g. `auth.example.com`): needs an **ACM certificate in `us-east-1`** (served through CloudFront), whatever the pool's Region.
+
+### User Pools: Adaptive Authentication
+
+- ![Adaptive authentication: signals such as a new device, unusual location or IP, leaked credentials, account takeover signs and failed attempts give each sign-in a low, medium or high risk score; low risk allows the sign-in, medium asks for MFA, high blocks it; events go to CloudWatch Logs](../images/CognitoAdaptiveAuth.png)
+- Cognito gives each sign-in attempt a **risk score**: **low / medium / high**.
+- Based on **device, location, IP address**, …; also checks **compromised credentials** and **account takeover**.
+- Per risk level you choose: **allow**, **require MFA** (only when risky), or **block**.
+- Logs sign-in attempts, risk scores and failed challenges to **CloudWatch Logs**.
+- Part of Cognito **threat protection** (a higher feature plan, extra cost).
+
+### User Pools: JWT Tokens
+
+- ![Cognito ID token: three Base64url parts joined by dots; the header holds the algorithm and key ID, the payload holds claims such as sub, cognito:username, cognito:groups, email, token_use, iss, aud, iat and exp, and the signature is verified with the pool's public keys from the JWKS URL](../images/CognitoJWT.png)
+- **JWT = JSON Web Token**: `header.payload.signature`, each part **Base64url-encoded** (encoded, **not encrypted**).
+- Three tokens after sign-in: **ID token** (who the user is), **access token** (what the app may call), **refresh token** (get new ones).
+- **Payload** (claims): `sub` (user's UUID in the pool), `cognito:username`, `cognito:groups`, `email`, `phone_number`, custom attributes, `iss`, `aud`, `exp`, `iat`.
+- **Always verify the signature** before trusting a token: pool's public keys at `<iss>/.well-known/jwks.json` (libraries do this, e.g. `aws-jwt-verify`).
+- From `sub` you can look up the full user in Cognito / the OIDC UserInfo endpoint.
+
+### ALB: Authenticate Users
+
+- ![ALB authenticate-oidc flow: users send an HTTPS request to the ALB, are redirected to the IdP authorization endpoint to log in and get an auth code, the ALB trades the code at the token endpoint for ID and access tokens, uses the access token at the UserInfo endpoint for user claims, then forwards the original request with the claims to Amazon ECS and returns the response](../images/CognitoALBOIDC.png)
+- **Offload authentication to the ALB** → the app only handles business logic.
+- Two listener rule actions (**HTTPS listener only**):
+    - `authenticate-cognito`: through a **Cognito User Pool** (social IdPs, SAML, LDAP / Microsoft AD via SAML).
+    - `authenticate-oidc`: directly with any **OIDC-compliant IdP**.
+- **`OnUnauthenticatedRequest`**: `authenticate` (default, redirect to login), `deny` (HTTP 401), `allow` (pass through without user info).
+- After login the ALB keeps a **session cookie** and forwards user claims to targets in `x-amzn-oidc-*` headers.
+- **Cognito setup**:
+    - Create a **User Pool, app client and domain**; the app client must return an **ID token**.
+    - Add the social / corporate IdP if needed.
+    - Allow the redirect URLs, e.g. `https://<domain-prefix>.auth.<region>.amazoncognito.com/saml2/idpresponse` on the IdP and `https://<alb-dns-or-cname>/oauth2/idpresponse` on the app client.
+- **OIDC setup**:
+    - Configure issuer, authorization, token and user info endpoints, **client ID and client secret**.
+    - Allow the redirect back to the ALB: `https://<alb-dns-name>/oauth2/idpresponse` and `https://<your-cname>/oauth2/idpresponse`.
+
+### Identity Pools
+
+- ![Cognito Identity Pool flow: the Orders app signs in to a user pool, Google, SAML or OIDC IdP and gets a token, sends the token to the identity pool, which validates it, calls STS AssumeRoleWithWebIdentity with the IAM role chosen for this user (authenticated or guest) and returns temporary credentials; the app then calls S3 orders-uploads and DynamoDB Orders directly](../images/CognitoIdentityPool.png)
+- Turns a **login token** into **temporary AWS credentials** (through **STS**).
+- **Identity sources**:
+    - Public providers: Login with Amazon, Facebook, Google, Apple.
+    - Users of a **Cognito User Pool**.
+    - **OIDC** and **SAML** IdPs.
+    - **Developer authenticated identities** (your own login server).
+    - **Unauthenticated (guest) access**.
+- Users then call AWS **directly** (S3, DynamoDB, …) or **through API Gateway** with IAM auth.
+- **IAM roles**:
+    - Default roles: one for **authenticated**, one for **guest** users.
+    - **Rules** to pick a role per user (e.g. by a claim or group).
+    - Each role's **trust policy** must trust **Cognito Identity Pools** (`cognito-identity.amazonaws.com`).
+
+### Identity Pools: Policy Variables
+
+- ![Policy variable: one authenticated role allows s3:GetObject and s3:PutObject on orders-uploads/${cognito-identity.amazonaws.com:sub}/* and dynamodb:Query with dynamodb:LeadingKeys equal to the same variable; user An with identity ID eu-west-1:1a2b only reaches her own folder and items, user Binh only his, and anything else is AccessDenied](../images/CognitoPolicyVariables.png)
+- One role for all users, but **each user only sees their own data**: `${cognito-identity.amazonaws.com:sub}` = the caller's **identity ID**.
+- **S3**: `Resource: arn:aws:s3:::orders-uploads/${cognito-identity.amazonaws.com:sub}/*` (+ `s3:ListBucket` with an `s3:prefix` condition).
+- **DynamoDB**: `dynamodb:LeadingKeys` = the same variable → only items whose partition key is the user's identity ID (see DynamoDB → Security).
+- **Guest** role: keep it small, e.g. `s3:GetObject` on public assets only.
+- The variable is the **Identity Pool identity ID** (`region:uuid`), not the `sub` claim of the User Pool token.
+
+### User Pools vs Identity Pools
+
+- ![User Pools vs Identity Pools: User Pools answer who you are, give JWT tokens, have their own directory plus federation, no guests, and offer hosted UI, MFA, triggers and adaptive auth for API Gateway, ALB or your backend; Identity Pools answer what you may do in AWS, give temporary AWS credentials, accept user pool, social, SAML, OIDC and developer identities, allow guests and map users to IAM roles with policy variables](../images/CognitoUserVsIdentityPools.png)
+- **User Pool = authentication** (who you are): user directory, federation, hosted UI, Lambda triggers, MFA / adaptive auth.
+- **Identity Pool = authorization** to AWS (what you may do): temporary credentials, guests, IAM roles + policy variables.
+- **CUP + CIP = authentication + authorization**: sign in with the User Pool, then trade its token for AWS credentials.
 
 ## AWS SAM
 
