@@ -828,6 +828,89 @@ markmap:
 - `sam deploy --config-env dev` / `--config-env prod` → **one template, separate stacks** per environment.
 - Without `--config-env` → the `default` environment.
 
+## AWS CDK
+
+### Overview
+
+- **CDK = Cloud Development Kit**: define cloud infrastructure in a **programming language** instead of YAML / JSON.
+    - TypeScript / JavaScript, Python, Java, C# (.NET), Go.
+- Building blocks = **constructs** (from one resource up to a whole architecture).
+- The code is **synthesized** (≈ "compiled") into a **CloudFormation template** → CloudFormation deploys it.
+- Infra and app code **in one project, deployed together**:
+    - Lambda: the function code is bundled as an asset next to the infra.
+    - ECS / EKS: CDK can build the **Docker image** and push it as part of the deploy.
+- Real code → loops, conditions, classes, IDE autocomplete, type checks, unit tests.
+
+### How It Works
+
+- ![AWS CDK flow: the developer writes a TypeScript CDK app, cdk synth produces cdk.out/OrdersStack.template.json, cdk deploy sends it to CloudFormation, which creates Lambda, API Gateway and DynamoDB in OrdersStack; SAM CLI can run sam local invoke -t on the same template](../images/CDKHowItWorks.png)
+- **App** → one or more **stacks** (1 stack = 1 CloudFormation stack) → **constructs** inside.
+- `cdk synth` writes the template (and assets) to `cdk.out/`.
+- `cdk deploy` runs `synth` first, uploads assets, then deploys through CloudFormation.
+
+### Constructs
+
+- ![CDK construct levels for the Orders app: L1 CfnTable sets every property by hand (key schema, attribute definitions, billing mode); L2 dynamodb.Table takes a partition and sort key with defaults and grantReadWriteData creates the IAM policy; L3 LambdaRestApi creates the REST API, deployment, stage, methods and permission from one handler](../images/CDKConstructLevels.png)
+- **Construct** = a component that holds everything CDK needs to produce part of the stack: **one resource** (an S3 bucket) or **several related ones** (a queue + the workers that process it).
+- **AWS Construct Library** (`aws-cdk-lib`): constructs for every AWS resource, at **3 levels**:
+    - **L1 (Cfn resources)**:
+        - Named `Cfn…` (`CfnBucket`, `CfnTable`); **generated** from the CloudFormation resource specification.
+        - 1:1 with CloudFormation → you set **every property yourself**.
+    - **L2 (intent-based API)**:
+        - Same resource, but with **defaults** and boilerplate done for you (no need to know every property).
+        - **Helper methods**: `bucket.addLifecycleRule()`, `bucket.urlForObject()`, `table.grantReadWriteData(fn)`.
+    - **L3 (patterns)**: **several resources** for a common task:
+        - `apigateway.LambdaRestApi` → API Gateway in front of a Lambda function.
+        - `ecs_patterns.ApplicationLoadBalancedFargateService` → Fargate service + ALB (+ cluster / VPC if you don't pass one).
+- **Construct Hub**: more constructs from AWS, third parties and the open-source community.
+
+### Commands
+
+- `npm install -g aws-cdk`: install the **CDK CLI** (the library `aws-cdk-lib` is a dependency of each project).
+- `cdk init app --language typescript`: new project from a template.
+- `cdk synth`: synthesize and print the CloudFormation template.
+- `cdk bootstrap`: deploy the **CDKToolkit** stack into an environment (see below).
+- `cdk deploy`: deploy the stack(s).
+- `cdk diff`: compare the local app with the **deployed** stack.
+- `cdk destroy`: delete the stack(s).
+
+### Bootstrapping
+
+- ![CDK bootstrapping: the developer runs cdk bootstrap aws://111122223333/eu-west-1, and CloudFormation creates the CDKToolkit stack in that account and Region with an S3 bucket for file assets, an ECR repository for images and IAM roles for deployments](../images/CDKBootstrap.png)
+- Prepares an **environment** (= **account + Region**) before the first CDK deploy there.
+- Creates a CloudFormation stack named **`CDKToolkit`**:
+    - **S3 bucket**: file assets (Lambda zips, templates).
+    - **ECR repository**: Docker image assets.
+    - **IAM roles**: used by `cdk deploy` to publish assets and run the deployment.
+- Run **once per environment**: `cdk bootstrap aws://<account-id>/<region>`.
+- Not bootstrapped → deploy fails, e.g. "Policy contains a statement with one or more invalid principal" (the CDK roles don't exist).
+
+### Testing
+
+- **CDK assertions module** (`aws-cdk-lib/assertions`) + a test framework: **Jest** (JS / TS), **Pytest** (Python).
+- Load the template:
+    - `Template.fromStack(stack)`: stack defined in CDK.
+    - `Template.fromString(json)`: template made outside CDK.
+- **Fine-grained assertions** (most common): check one part of the template.
+    - `template.hasResourceProperties('AWS::Lambda::Function', {Runtime: 'nodejs20.x'})`.
+    - `template.resourceCountIs('AWS::SQS::Queue', 1)`.
+    - Also: resources, outputs, conditions, parameters.
+- **Snapshot tests**: compare the whole synthesized template with a **stored baseline** (`expect(template.toJSON()).toMatchSnapshot()`) → catches any unexpected change.
+
+### CDK vs SAM
+
+- ![AWS SAM vs AWS CDK: SAM covers serverless apps with a declarative YAML / JSON template and AWS::Serverless shorthand, best for a quick start with Lambda; CDK covers any AWS service with code in TypeScript, Python, Java, C# or Go using L1 / L2 / L3 constructs, best for large or reusable infrastructure; both produce CloudFormation and CDK can use SAM CLI for local testing](../images/CDKvsSAM.png)
+- **SAM**: serverless focus, declarative YAML / JSON, fastest start with Lambda.
+- **CDK**: all AWS services, real programming language, reusable constructs.
+- Both **produce CloudFormation** templates.
+
+### CDK + SAM
+
+- **SAM CLI can test CDK apps locally**:
+    1. `cdk synth` → `cdk.out/OrdersStack.template.json`.
+    2. `sam local invoke -t cdk.out/OrdersStack.template.json OrdersFunction`.
+- The function is named by its CDK construct ID (or its logical ID in the template).
+
 ## Serverless Solution Architectures
 
 ### Mobile App (TodoList Example)
