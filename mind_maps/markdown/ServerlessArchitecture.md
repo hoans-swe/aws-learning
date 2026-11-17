@@ -688,17 +688,115 @@ markmap:
 
 ## AWS Step Functions
 
-- **Definition**: Serverless function orchestrator to build visual workflows.
-- **Features**
-    - Coordinate components (Lambda, ECS, EC2, API Gateway, SQS, on-prem, etc.).
-    - Define workflows with sequences, parallel execution, conditions, error handling, timeouts.
-    - Supports human approval steps.
-    - State management for workflows.
-- **Use Cases**
-    - Order fulfillment
-    - data processing pipelines
-    - ETL orchestration
-    - microservice coordination, any multi-step process.
+### Overview
+
+- **Serverless orchestrator**: model a workflow as a **state machine** (one per workflow).
+- Defined in **JSON** (Amazon States Language); console shows the **visual graph**, each execution and its history.
+- Use cases: order fulfillment, data processing, web app back-ends, any multi-step process (with human approval steps).
+- Start an execution from: **SDK / CLI** (`StartExecution`), **API Gateway**, **EventBridge** rule, another state machine.
+
+### States
+
+- ![Step Functions state machine for an order: a Lambda task validates the order, a Choice state sends totals over 1,000 dollars to a manager approval task that waits for a task token, then a Parallel state charges the card with a Lambda task (with Retry) and reserves stock with a DynamoDB task; a Catch on any error goes to an SNS notify task and a Fail state, otherwise the execution ends in Succeed](../images/StepFunctionsStateMachine.png)
+- **Task**: does the work, calls **one AWS service**:
+    - Invoke Lambda, run an AWS Batch job, run an ECS task (and wait), put an item in DynamoDB, publish to SNS / send to SQS, start another state machine, … (200+ services through SDK integrations).
+    - Or run an **Activity** (worker you host, see below).
+- **Choice**: test a condition → branch (or default branch).
+- **Pass**: pass input to output or inject fixed data, no work.
+- **Wait**: delay for some seconds or until a timestamp.
+- **Map**: run the same steps for **each item** of an array.
+- **Parallel**: run branches **at the same time**, continue when all are done.
+- **Succeed / Fail**: end the execution with success or failure.
+
+### Error Handling
+
+- A state can fail because of: definition issues (no matching rule in a Choice), **task failures** (exception in Lambda), **transient issues** (network).
+- Handle errors **in the state machine** with **Retry** and **Catch**, not in the application code.
+- Predefined error names:
+    - `States.ALL`: any error.
+    - `States.Timeout`: ran longer than `TimeoutSeconds`, or no heartbeat.
+    - `States.TaskFailed`: execution failure.
+    - `States.Permissions`: not enough privileges.
+    - Tasks can also report their own error names (e.g. `Payment.Timeout`).
+- **Retry** (Task / Parallel), evaluated **top to bottom**:
+    - `ErrorEquals`: which errors; `IntervalSeconds`: first delay; `BackoffRate`: multiply the delay each time.
+    - `MaxAttempts`: default **3**, `0` = never retry.
+    - All attempts used → **Catch** takes over.
+- **Catch** (Task / Parallel), top to bottom:
+    - `ErrorEquals` + `Next`: state to go to.
+    - `ResultPath`: where to put the error in the input, e.g. `"$.error"` → the next state gets the **original input + the error**.
+
+### Wait for Task Token & Activities
+
+- ![Step Functions task tokens: in the callback pattern Step Functions sends a message with the task token to an SQS approvals queue, an approval app or Lambda processes it and calls SendTaskSuccess or SendTaskFailure with the token; in an activity task a worker on EC2 or on-premises polls with GetActivityTask, gets the input and task token, sends heartbeats and finishes with SendTaskSuccess](../images/StepFunctionsTaskToken.png)
+- **Wait for task token** (callback, **push**):
+    - Add `.waitForTaskToken` to the task's `Resource` → the execution **pauses** at that task.
+    - The token goes out with the task (e.g. in an SQS message); another system does the work: **human approval**, third party, legacy system.
+    - Resumes when someone calls `SendTaskSuccess` / `SendTaskFailure` **with that token**.
+- **Activity tasks** (**pull**):
+    - **Activity worker** runs anywhere (EC2, Lambda, mobile, on-premises) and **polls** with `GetActivityTask` → gets input + task token.
+    - Finishes with `SendTaskSuccess` / `SendTaskFailure`.
+    - `TimeoutSeconds`: how long the task may wait; `SendTaskHeartbeat` within `HeartbeatSeconds` keeps it alive → can wait up to **1 year**.
+
+### Standard vs Express
+
+- ![Step Functions Standard vs Express: Standard runs up to 1 year, exactly-once, about 2,000 starts per second, 90-day history, priced per state transition, for long non-idempotent work; Express runs up to 5 minutes, at-least-once when asynchronous and at-most-once when synchronous, 100,000+ starts per second, history only in CloudWatch Logs, priced per execution, duration and memory, for high-volume short work](../images/StepFunctionsStandardVsExpress.png)
+- **Standard** (default): long (up to **1 year**), **exactly-once**, history kept in Step Functions → payments, approvals.
+- **Express**: short (up to **5 minutes**), very high rate, cheaper per run, results / history in **CloudWatch Logs**:
+    - **Asynchronous**: don't wait for the result, **at-least-once** → steps must be **idempotent**.
+    - **Synchronous**: caller **waits** (API Gateway, Lambda), **at-most-once** → orchestrate microservices.
+
+## AWS AppSync
+
+### Overview
+
+- ![AWS AppSync: web and mobile apps send GraphQL queries and mutations to AppSync and receive subscriptions over WebSockets; AppSync's schema and resolvers fetch fields from DynamoDB, Aurora, OpenSearch, Lambda and HTTP APIs, and it sends metrics and logs to CloudWatch](../images/AppSync.png)
+- Managed **GraphQL** API service.
+- **GraphQL**: the client asks for **exactly the fields it needs**, in one request, even when they come from **several data sources**.
+- It all starts with a **GraphQL schema** (types, queries, mutations, subscriptions) uploaded to AppSync.
+- **Resolvers** connect each field to a **data source**:
+    - DynamoDB, Aurora, OpenSearch, HTTP APIs.
+    - **Lambda** for anything else (custom sources).
+    - Written in JavaScript (or VTL mapping templates).
+- **Real-time**: subscriptions over **WebSocket** (or MQTT over WebSocket).
+- Mobile apps: local data access and **offline sync**.
+- Metrics and logs in **CloudWatch**.
+
+### Security
+
+- Four ways to authorize clients:
+    - `API_KEY`: simple key (public / prototype APIs).
+    - `AWS_IAM`: IAM users / roles, cross-account access (e.g. Cognito Identity Pool credentials).
+    - `OPENID_CONNECT`: any OIDC provider, JWT tokens.
+    - `AMAZON_COGNITO_USER_POOLS`: users of a Cognito User Pool (can check groups).
+    - Also: `AWS_LAMBDA` (custom authorizer function).
+- Custom domain: built in today; the course's answer is **CloudFront in front of AppSync** for a custom domain + HTTPS.
+
+## AWS Amplify
+
+### Overview
+
+- Set of tools to **build and host full-stack web and mobile apps** ("Elastic Beanstalk for web and mobile apps").
+- Parts:
+    - **Amplify Studio**: build UI and back-end visually.
+    - **Amplify CLI**: set up the back-end with a guided workflow (Gen 2: back-end defined in TypeScript, on CDK).
+    - **Amplify Libraries**: connect the front-end to AWS (Cognito, S3, AppSync, …); React, Vue, JavaScript, iOS, Android, Flutter.
+    - **Amplify Hosting**: host the web app.
+- Back-end = AWS services: **Cognito** (auth), **AppSync + DynamoDB** (data), **S3** (storage), ML services.
+
+### Important Features
+
+- **Authentication** → **Cognito**: sign-up / sign-in, account recovery, MFA, social sign-in, pre-built UI components, fine-grained authorization.
+- **DataStore** → **AppSync + DynamoDB**: work with local data that **syncs** to the cloud automatically, GraphQL, **offline + real-time**, visual data modeling in Studio.
+
+### Amplify Hosting
+
+- Build and host modern web apps:
+    - **CI/CD** from a Git repository: build front-end (+ back-end) → deploy behind **CloudFront**.
+    - **Pull request previews**, custom domains, monitoring, redirects and custom headers, password protection.
+- **End-to-end (E2E) tests** in the **test** phase of the build (`amplify.yml`):
+    - Integrated with **Cypress**; generates a UI test report.
+    - Catch regressions **before** deploying to production.
 
 ## Customization at the Edge (CloudFront)
 
