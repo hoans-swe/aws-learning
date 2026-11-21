@@ -35,22 +35,35 @@ markmap:
 ### Overview
 
 - Managed service for creating, managing, and controlling cryptographic keys across AWS. Central to many AWS service encryption features. Integrates with IAM and CloudTrail.
+- Exam hint: "encryption" on an AWS service → almost always **KMS**.
+- **IAM** authorizes key use; **CloudTrail** logs every key use (audit).
+- Built into EBS, S3, RDS, SSM, Lambda env vars…; also callable directly (SDK/CLI).
+- **Never keep secrets in plaintext in code** → encrypt them with KMS, store the ciphertext in code / env vars, decrypt at run time.
 
 ### KMS Keys (formerly CMKs - Customer Master Keys)
 
 - **Key Types**
     - **Symmetric (AES-256)**: Single key for encryption/decryption. Used by most integrated AWS services. Key material never leaves KMS unencrypted.
     - **Asymmetric (RSA, ECC)**: Public/Private key pair for encryption/decryption OR signing/verification. Public key is downloadable.
+        - Private key never leaves KMS unencrypted.
+        - Use case: someone **outside AWS** (no KMS API access) encrypts with the public key; you decrypt inside KMS.
 - **Key Management Options**
     - **AWS Owned Keys**: Used internally by AWS services (e.g., SSE-S3 default). Not manageable by user. Free.
     - **AWS Managed Keys**: Created by AWS for specific services (e.g., `aws/ebs`, `aws/rds`). Managed by AWS but visible to user. Automatic rotation (1 year). Free.
     - **Customer Managed Keys (CMK)**: Created by the user (or imported). Full control over key policy, lifecycle, rotation. Charged per key/month + API usage. Supports optional automatic rotation (1 year) or manual rotation. Imported keys support manual rotation only.
+        - Course pricing: **$1 / key / month** (created or imported) + **$0.03 per 10,000 API calls**.
+        - Customer managed rotation: automatic must be **enabled** (default every 365 days, configurable 90–2560 days) and **on-demand** rotation is also possible.
+        - Imported key material: **manual** rotation only → create a new key and repoint the **alias** (`alias/orders-key`).
 
 ### KMS Key Policies
 
 - Primary method to control access to CMKs (mandatory for CMKs).
 - Define who can use (e.g., encrypt/decrypt) and who can administer the key.
 - Enables cross-account key sharing.
+- Like an S3 bucket policy, **but mandatory**: without a key policy statement, nobody (not even admins) can use the key.
+- **Default key policy** (when you don't write one): gives the **account root** = whole account full access → IAM policies then decide who uses it.
+- **Custom key policy**: name the users/roles that **use** the key and those that **administer** it; needed for **cross-account** use.
+- `Principal` options in policies: AWS account / root, IAM role, role session, IAM user, federated user session, AWS service (`"Service": "s3.amazonaws.com"`), everyone (`"*"`).
 
 ### Multi-Region Keys
 
@@ -65,7 +78,45 @@ markmap:
 
 - **Copying Encrypted Snapshots/AMIs**: Requires sharing the KMS key via policy and re-encrypting in the target account/region.
     - EBS volume encrypted with KMS Key A (eu-west-2) → snapshot → KMS ReEncrypt with KMS Key B → snapshot/volume in ap-southeast-2
+- **Copying an encrypted EBS snapshot to another account**
+    - Snapshot must use a **customer managed key** (AWS managed keys cannot be shared).
+    - Add the target account to that key's **key policy** → share the snapshot.
+    - In the target account: **copy** the snapshot, re-encrypt with its **own** CMK → create the volume.
 - **S3 Cross-Region Replication (CRR) with SSE-KMS**: Requires IAM role with decrypt/encrypt permissions for source/target keys.
+
+### KMS APIs (Symmetric)
+
+- **`Encrypt`** / **`Decrypt`**: up to **4 KB** of data (a password, a DEK…). KMS checks IAM, then encrypts/decrypts with the CMK.
+- **`GenerateDataKey`**: returns a new data key (DEK) twice: **plaintext** + **encrypted under the CMK** → use now.
+- **`GenerateDataKeyWithoutPlaintext`**: only the encrypted DEK → for later use (call `Decrypt` when needed).
+- **`ReEncrypt`**: decrypt + encrypt with another key inside KMS (plaintext never leaves).
+- **`GenerateRandom`**: random byte string.
+
+### Envelope Encryption
+
+- Data **> 4 KB** → cannot go through `Encrypt` → **envelope encryption** = **`GenerateDataKey`** (exam keyword).
+- Encrypt: `GenerateDataKey` → encrypt file locally with plaintext DEK → drop plaintext DEK → store **encrypted file + encrypted DEK** together.
+- Decrypt: `Decrypt` the encrypted DEK → decrypt file locally.
+- ![Envelope encryption of a 10 MB orders export: KMS GenerateDataKey returns plaintext and encrypted DEK, the file is encrypted locally; decrypt reverses it](../images/KMSEnvelopeEncryption.png)
+
+### AWS Encryption SDK
+
+- Library that **implements envelope encryption** for you (Java, Python, C, JavaScript) + a CLI.
+- Puts the encrypted DEK **inside the ciphertext message** → one blob to store.
+- **Data key caching**: reuse a DEK for several messages → fewer KMS calls (cheaper, avoids throttling), at a security cost.
+    - `LocalCryptoMaterialsCache` with limits: max age, max bytes, max messages per key.
+
+### KMS Request Quotas
+
+- Over the quota → **`ThrottlingException`** → retry with **exponential backoff**.
+- Cryptographic operations (`Encrypt`, `Decrypt`, `GenerateDataKey`, `ReEncrypt`…) **share one quota** per account/Region, including calls AWS makes **for you** (e.g. SSE-KMS on S3).
+- Course numbers (symmetric, per second): 5,500 / 10,000 / 30,000 shared depending on Region; asymmetric much lower (RSA 500, ECC 300).
+- Fixes: **DEK caching** (Encryption SDK), **S3 Bucket Key**, or request a quota increase (Service Quotas API / support).
+
+### S3 Bucket Key (SSE-KMS)
+
+- S3 gets a short-lived **bucket-level key** from KMS, then derives **data keys** for objects itself.
+- → up to **99% fewer KMS calls** and **99% lower KMS cost**; fewer KMS events in CloudTrail.
 
 ## Secrets Management
 
