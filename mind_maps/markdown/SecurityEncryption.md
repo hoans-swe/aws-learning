@@ -118,6 +118,30 @@ markmap:
 - S3 gets a short-lived **bucket-level key** from KMS, then derives **data keys** for objects itself.
 - → up to **99% fewer KMS calls** and **99% lower KMS cost**; fewer KMS events in CloudTrail.
 
+## AWS CloudHSM
+
+### Overview
+
+- **KMS** = AWS runs the encryption **software**; **CloudHSM** = AWS gives you dedicated encryption **hardware** (HSM = Hardware Security Module).
+- **You** fully manage the keys and HSM users (AWS cannot see or recover them).
+- Tamper-resistant, **FIPS 140-2 Level 3**; symmetric + asymmetric (incl. SSL/TLS keys).
+- Needs the **CloudHSM client** software (SSL connection); IAM only controls the **cluster** (create/delete), not the keys.
+- No free tier. Good fit for **SSE-C** (you hold the keys) and Redshift encryption.
+
+### High Availability & Integration
+
+- Cluster of HSMs spread across **multiple AZs** → HA and durability.
+- **KMS custom key store** backed by CloudHSM → EBS, S3, RDS… use keys living in your HSMs; usage still logged in CloudTrail.
+
+### CloudHSM vs KMS
+
+- **Tenancy**: KMS multi-tenant vs CloudHSM **single-tenant**.
+- **Keys**: KMS has AWS owned / AWS managed / customer managed vs CloudHSM customer managed only.
+- **Where**: KMS key is regional (multi-Region keys optional) vs CloudHSM lives **in your VPC** (share with VPC peering).
+- **Access**: KMS uses **IAM** vs CloudHSM has its **own users and permissions** (+ MFA).
+- **Extras**: CloudHSM offers SSL/TLS and Oracle TDE acceleration; KMS has a free tier, CloudHSM does not.
+- HA: KMS is fully managed vs CloudHSM you add HSMs in several AZs.
+
 ## Secrets Management
 
 ### SSM Parameter Store
