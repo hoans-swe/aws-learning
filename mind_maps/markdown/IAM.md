@@ -89,8 +89,93 @@ markmap:
 
 - **Using IAM Roles**
     - Create a role in Account B trusting Account A. User in Account A assumes the role, getting Account B permissions (and losing Account A permissions temporarily).
+    - Done with **STS `AssumeRole`** (see AWS STS below).
 - **Using Resource-based Policies**
     - Resource in Account B explicitly grants access to Principal in Account A via its policy. Principal keeps their Account A permissions.
+
+### IAM Policies + S3 Bucket Policies
+
+- **Identity-based** policies attach to users, groups, roles; **bucket policies** attach to the bucket.
+- For a principal calling a bucket in the **same account**, AWS evaluates the **union** of both.
+    - Any explicit **Deny** (in either) → denied.
+    - Else an **Allow** in **either** one is enough → allowed.
+    - Nothing allows → implicit deny.
+- Cross-account is stricter: both the caller's IAM policy **and** the bucket policy must allow.
+- ![Four cases of an EC2 role policy combined with a bucket policy: explicit Deny always wins, otherwise any Allow is enough](../images/IAMBucketPolicyUnion.png)
+
+### Dynamic Policies (Policy Variables)
+
+- Problem: give every user their own `home/<user>/` prefix in a bucket → one policy per user does **not scale**.
+- Solution: **one** policy with the variable `${aws:username}`, resolved at request time.
+    - `"Resource": "arn:aws:s3:::orders-team-files/home/${aws:username}/*"`
+    - `s3:ListBucket` with condition `"s3:prefix": ["home/${aws:username}/*"]`.
+- Other variables: `${aws:PrincipalTag/team}`, `${aws:userid}`, `${aws:SourceIp}`.
+
+### Inline vs Managed Policies
+
+- **AWS managed**: written and **updated by AWS** (new services/APIs added); good for admins and power users; cannot edit.
+- **Customer managed** (**best practice**): reusable on many principals, **versioned** with rollback (up to 5 versions), central change control.
+- **Inline**: embedded in **one** principal (strict 1:1); **deleted with the principal**; use only for a strict one-off.
+
+### Passing a Role to a Service (`iam:PassRole`)
+
+- Many services need a role **handed to them once at setup**, then the service **assumes** it: EC2 instance profile, Lambda execution role, ECS task role, CodePipeline service role…
+- The person configuring it needs **`iam:PassRole`** on that role ARN (often with `iam:GetRole` to view it).
+    - Scope it: `Resource` = specific role ARNs, condition `iam:PassedToService` = e.g. `lambda.amazonaws.com`.
+- A role can only be passed to a service its **trust policy** allows (`"Principal": {"Service": "lambda.amazonaws.com"}`).
+- Prevents privilege escalation: a dev cannot attach an admin role to their own Lambda.
+- ![Developer passes orders-api-role to a Lambda with iam:PassRole; Lambda later assumes it to write to DynamoDB](../images/IAMPassRole.png)
+
+## AWS STS (Security Token Service)
+
+### Overview
+
+- Issues **temporary, limited** credentials: access key ID + secret key + **session token** + **expiration**.
+- Course: up to 1 h by default; `AssumeRole` session is **15 min – 1 h** by default (role max session can be raised to 12 h).
+- Global endpoint `sts.amazonaws.com` plus regional endpoints (recommended for latency).
+
+### Main APIs
+
+- **`AssumeRole`**: assume a role in **your account or another account**.
+- **`AssumeRoleWithSAML`**: credentials for users signed in through a **SAML 2.0** IdP (e.g. corporate AD FS).
+- **`AssumeRoleWithWebIdentity`**: credentials for users from an **OIDC** IdP (Google, Facebook, Login with Amazon…).
+    - AWS recommends **Cognito Identity Pools** instead.
+- **`GetSessionToken`**: temporary creds for an IAM user or root, typically **with MFA**.
+- **`GetFederationToken`**: temporary creds for a federated user (proxy app calls it on their behalf).
+- **`GetCallerIdentity`**: who am I? → account, user/role ARN of the caller (needs no permission).
+- **`DecodeAuthorizationMessage`**: decode the encoded message of an `AccessDenied` error.
+
+### Assuming a Role
+
+- Create the role (same or other account); its **trust policy** = which principals may assume it.
+- Caller runs `aws sts assume-role --role-arn … --role-session-name …` → temp creds.
+- While using them, the caller has **only the role's permissions** (not their own).
+- Cross-account: the role's trust policy names the other account; that account must also allow `sts:AssumeRole` to its users.
+- ![Dev account user calls STS AssumeRole, STS checks the prod role trust policy, returns temporary credentials, the user then calls S3 in prod](../images/STSAssumeRole.png)
+
+### STS with MFA
+
+- Call **`GetSessionToken`** with `--serial-number` (MFA device) + `--token-code`.
+- Protect sensitive actions with condition `"Bool": {"aws:MultiFactorAuthPresent": "true"}`.
+- Returns access key ID, secret key, session token, expiration → put them in a CLI profile.
+
+## IAM Best Practices
+
+### General
+
+- Never use **root** credentials day to day; enable **MFA** on root.
+- **Least privilege**: each user/group/role gets only what it needs; never `"Action": "s3:*"`-style wildcards without reason.
+- Watch API calls (especially **denied** ones) in **CloudTrail**.
+- Long-term access keys only on a **personal machine** or **on-premises server**; on-prem servers should prefer **STS temporary credentials** (e.g. IAM Roles Anywhere).
+
+### Roles
+
+- Each **EC2 instance**, **Lambda function**, **ECS task** (`ECS_ENABLE_TASK_IAM_ROLE=true`), **CodeBuild project** gets its **own role**.
+- **One role per application / function** - do not share roles between apps.
+
+### Cross-Account Access
+
+- Create a role in the target account, trust the source account, use **STS `AssumeRole`** → temporary creds (15 min – 1 h).
 
 ## AWS Organizations
 
@@ -152,6 +237,12 @@ markmap:
 
 - Managed services for using Microsoft Active Directory or AD-compatible directories on AWS.
 
+### What is Microsoft Active Directory (AD)?
+
+- Directory database on **Windows Server (AD Domain Services)**: users, computers, printers, file shares, security groups.
+- **Centralized** account and permission management; logins checked by a **Domain Controller**.
+- Objects grouped in **trees**; a group of trees = a **forest**.
+
 ### Integration
 
 - Used as an identity source for IAM Identity Center.
@@ -159,8 +250,11 @@ markmap:
 ### Services
 
 - **AWS Managed Microsoft AD**: Fully managed AD hosted on AWS. Supports trust relationships with on-prem AD.
+    - Users managed **in AWS**; supports **MFA**; two-way **trust** → users of either side can log in to the other.
 - **AD Connector**: Proxy service to connect to an existing on-premise AD for authentication. Users remain managed on-prem.
+    - Just a **gateway** (no cache, no users stored in AWS); supports **MFA**.
 - **Simple AD**: Standalone, AD-compatible directory. Does not support trust relationships.
+    - Cheap, basic; **cannot join** an on-prem AD → use when there is **no** on-prem AD.
 
 ## AWS Control Tower
 
