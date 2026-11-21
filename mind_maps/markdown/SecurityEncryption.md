@@ -148,12 +148,22 @@ markmap:
 
 - Secure storage for configuration data and secrets (passwords, keys, etc.).
 - Supports hierarchical organization (`/app/dev/db_pass`).
+    - Example tree: `/orders/dev/db-url`, `/orders/dev/db-password`, `/orders/prod/…` → dev Lambda reads `/orders/dev/` with **`GetParametersByPath`**, prod Lambda reads `/orders/prod/`.
+    - IAM can allow a path prefix only (`arn:aws:ssm:…:parameter/orders/prod/*`).
+    - Special paths: `/aws/reference/secretsmanager/<secret-id>` (read a Secrets Manager secret through SSM) and public `/aws/service/ami-amazon-linux-latest/…` (latest AMI IDs).
+- Serverless, scalable, simple SDK (`GetParameter`, `GetParameters`, `--with-decryption` for SecureString).
+- Integrates with **CloudFormation**.
 - Optional encryption using KMS.
 - Version tracking of parameters.
 - Access control via IAM.
 - Notifications via EventBridge.
 - **Tiers**: Standard (free, 4KB limit, 10k params, no policies) vs. Advanced (paid, 8KB limit, 100k params, supports policies).
+    - Course: Advanced costs **$0.05 / parameter / month**; limits are per account and Region.
 - **Parameter Policies (Advanced Tier)**: TTL/Expiration, Change Notifications via EventBridge.
+    - `Expiration`: delete the parameter at a date (force rotating a password).
+    - `ExpirationNotification`: EventBridge event before it expires.
+    - `NoChangeNotification`: EventBridge event if the value was not changed for X days.
+    - Several policies can be attached at once.
 - **Use Case**: Store application config, retrieve dynamically.
 - Flow: Application ⇄ (plaintext / encrypted configuration) ⇄ SSM Parameter Store → check IAM permissions; decryption service → AWS KMS
 
@@ -165,6 +175,30 @@ markmap:
 - Encrypts secrets using KMS.
 - Supports Multi-Region Secrets replication.
 - Generally preferred for database credentials due to auto-rotation.
+- Rotation every **X days**; a **Lambda** generates and sets the new value.
+- **Multi-Region secrets**: read **replicas** kept in sync with the primary; a replica can be **promoted** to a standalone secret (DR, multi-Region apps/DBs).
+
+### Parameter Store vs Secrets Manager
+
+- **Secrets Manager ($$$)**
+    - **Built-in rotation** with Lambda; AWS **provides** the Lambda for RDS, Redshift, DocumentDB.
+    - KMS encryption **mandatory**.
+    - CloudFormation integration.
+- **Parameter Store ($)**
+    - Simple API, cheap / free.
+    - **No native rotation** → build it: EventBridge schedule → your Lambda.
+    - KMS encryption **optional** (SecureString).
+    - CloudFormation integration; can read Secrets Manager secrets via `/aws/reference/secretsmanager/…`.
+- ![Rotating the orders DB password: Secrets Manager invokes its provided rotation Lambda; with Parameter Store an EventBridge rule invokes your own Lambda that changes RDS and the parameter](../images/SecretsRotation.png)
+
+### CloudFormation Dynamic References
+
+- Template pulls a value at **create/update/delete** time: `'{{resolve:service-name:reference-key}}'`.
+    - `{{resolve:ssm:/orders/prod/db-url:1}}` → plaintext String parameter.
+    - `{{resolve:ssm-secure:/orders/prod/db-password:1}}` → SecureString (only some resource properties support it).
+    - `{{resolve:secretsmanager:orders/db:SecretString:password}}` → secret (optional json-key, version stage, version id).
+- **RDS master password, option 1**: `ManageMasterUserPassword: true` → RDS/Aurora **creates and rotates** the admin secret in Secrets Manager itself.
+- **RDS master password, option 2**: `AWS::SecretsManager::Secret` generates it → DB references it with `resolve:secretsmanager` → `SecretTargetAttachment` links secret and DB (for rotation).
 
 ## AWS Certificate Manager (ACM)
 
