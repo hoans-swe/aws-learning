@@ -200,6 +200,28 @@ markmap:
 - **RDS master password, option 1**: `ManageMasterUserPassword: true` → RDS/Aurora **creates and rotates** the admin secret in Secrets Manager itself.
 - **RDS master password, option 2**: `AWS::SecretsManager::Secret` generates it → DB references it with `resolve:secretsmanager` → `SecretTargetAttachment` links secret and DB (for rotation).
 
+## Encryption & Secrets in Other Services
+
+### CloudWatch Logs Encryption
+
+- Encrypt a **log group** with a KMS key (at create time or later).
+- **Not from the console** → CLI/API only:
+    - `associate-kms-key` → existing log group.
+    - `create-log-group --kms-key-id` → new log group.
+- The key policy must allow the CloudWatch Logs service principal (`logs.<region>.amazonaws.com`).
+
+### CodeBuild Security
+
+- To reach resources **in your VPC** (RDS, ElastiCache…), give the build project a **VPC configuration**.
+- Never put secrets as plaintext environment variables → reference **Parameter Store** (`parameter-store`) or **Secrets Manager** (`secrets-manager`) in the buildspec `env` section.
+
+### AWS Nitro Enclaves
+
+- Isolated, hardened VM carved from a Nitro EC2 instance to process **very sensitive data** (PII, health, card data, private keys).
+- No persistent storage, no interactive access (no SSH), no external network → tiny attack surface; talks to its parent only over a **local vsock channel**.
+- **Cryptographic attestation**: KMS key policy can allow decrypt **only for a signed enclave image** → only that code can see the data.
+- Setup: launch instance with `EnclaveOptions=true` → Nitro CLI builds an **Enclave Image File (EIF)** → run the enclave (own kernel, memory, vCPUs).
+
 ## AWS Certificate Manager (ACM)
 
 ### Overview
