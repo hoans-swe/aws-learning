@@ -270,3 +270,22 @@ markmap:
 - Access is **all or nothing**: a principal can read **all** packages of the repo or **none** (no per-package permission).
 - Typical read actions: `codeartifact:ReadFromRepository`, `ListPackages`, `DescribePackageVersion`, `GetRepositoryEndpoint`.
 - The other account's principal also needs IAM permissions on its side (cross-account = both sides allow).
+
+## AWS AppConfig
+
+### Overview
+
+- Part of **Systems Manager**: create, **validate** and **deploy dynamic configuration** separately from code deployments.
+- App picks up new config **without restart or redeploy** (it **polls** AppConfig, e.g. via the AppConfig agent / Lambda extension).
+- Use cases: **feature flags**, application tuning (timeouts, batch sizes), allow/block lists.
+- Runs with apps on EC2, Lambda, ECS, EKS, on-premises.
+- Config sources: AppConfig hosted store, **Parameter Store**, **SSM Documents**, **S3**…
+
+### Validation & Deployment
+
+- Validate **before** deploying:
+    - **JSON Schema** → syntactic check (shape, types).
+    - **Lambda validator** → semantic check (your own business rules).
+- **Deployment strategy**: gradual rollout (e.g. linear 20% every 10 min) with bake time.
+- **CloudWatch alarm** fires during rollout → automatic **rollback**.
+- ![AppConfig: new flags from S3 or Parameter Store are validated, rolled out gradually to orders-api, and rolled back if a CloudWatch alarm fires](../images/AppConfig.png)
