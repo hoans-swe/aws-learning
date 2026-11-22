@@ -82,6 +82,9 @@ markmap:
 - Modes: Managed Cluster or Serverless.
 - Querying: Primarily uses OpenSearch API/DSL; SQL support available via plugin.
 - Integrations: Ingest data from Kinesis Data Firehose, Kinesis Data Streams, CloudWatch Logs, AWS IoT. Security via IAM/Cognito. Visualization with OpenSearch Dashboards.
+- Typical pattern: **DynamoDB** (by key) for CRUD + **OpenSearch** for search on any field / partial text, e.g. search orders by product name.
+- Security: Cognito & IAM for access, **KMS** at rest, **TLS** in flight.
+- No native SQL (plugin needed) → exam: "search any field / full-text" = OpenSearch; "SQL on S3" = Athena.
 
 ### Ingestion Patterns
 
@@ -200,12 +203,22 @@ markmap:
 - Fully managed service for Apache Kafka.
 - Simplifies setup, scaling, management of Kafka clusters (brokers, Zookeeper nodes).
 - Features: Multi-AZ deployment, automated failure recovery, EBS storage for data retention, MSK Serverless option.
+    - Cluster runs **in your VPC**, brokers spread over up to **3 AZs**.
+    - MSK creates/updates/deletes the **broker** and **ZooKeeper** nodes for you.
+    - Data kept on **EBS** as long as you want (Kinesis has a retention limit).
+    - **MSK Serverless**: no capacity to manage; compute and storage scale automatically.
+- How Kafka works: **producers** (your code) write to a **topic** → brokers **replicate** its partitions → **consumers** (your code) **poll** the topic.
+- ![MSK: orders-api and IoT devices write to a topic, three brokers in three AZs replicate it, Lambda, EC2/ECS/EKS apps and Flink/Glue poll it](../images/MSKKafka.png)
 - Use Cases: Real-time data streaming, event sourcing, log aggregation, messaging queue (alternative to Kinesis).
 
 ### Consumers & Comparison
 
 - **Consumers**: Lambda, Managed Service for Apache Flink, Glue Streaming ETL, applications on EC2/ECS/EKS.
-- **MSK vs. Kinesis Data Streams**: Key differences in message size limits, partitioning/sharding flexibility, encryption details.
+- **MSK vs. Kinesis Data Streams**
+    - **Message size**: Kinesis max **1 MB** vs MSK 1 MB default, configurable higher (e.g. 10 MB).
+    - **Unit of scale**: Kinesis **shards** (split and merge) vs Kafka **topics with partitions** (can only **add** partitions).
+    - **In-flight encryption**: Kinesis TLS vs MSK **PLAINTEXT or TLS**.
+    - **At rest**: both KMS.
 
 ## Example Big Data Ingestion Pipeline
 
