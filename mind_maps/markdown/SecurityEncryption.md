@@ -238,6 +238,13 @@ markmap:
 - **Public Certificates**: Issued by ACM (via Amazon Trust Services CA) or imported. Free if issued by ACM. Automatic renewal for ACM-issued certs.
 - **Private Certificates**: For internal use (Private CA feature).
 
+### AWS Private CA
+
+- Managed **private Certificate Authority**: create your own **root** and **subordinate** CAs.
+- Issues end-entity **X.509** certificates trusted **only inside your organization** (not by the public Internet).
+- Works with ACM-integrated services: ELB, CloudFront, API Gateway; also certificates for EKS.
+- Use cases: internal **TLS** between services, **code signing**, authenticating users / computers / API endpoints / **IoT devices**, building an enterprise **PKI**.
+
 ### Validation
 
 - DNS (preferred for automation) or Email.
