@@ -323,3 +323,19 @@ markmap:
 - Less scalable than SQS/SNS
 - Suitable when existing applications rely on open protocols
 - Requires broker instance management (updates, sizing) unlike fully managed SQS/SNS
+
+## Amazon SES (Simple Email Service)
+
+### Overview
+
+- Fully managed service to **send** (and **receive**) emails securely, globally, at scale.
+- Send from your app with the **SES API**, the **SMTP** interface, or the console.
+- Use cases: **transactional** (order confirmation from `orders-api`), **marketing**, **bulk** email.
+
+### Features
+
+- Reputation dashboard, performance insights, anti-spam feedback.
+- Statistics: deliveries, **bounces**, complaints (feedback loop), opens.
+- Email authentication: **DKIM** and **SPF**.
+- IP options: **shared**, **dedicated**, or **bring your own** IPs.
+- vs SNS: SNS email is for simple notifications to subscribers; SES is a real email platform (HTML, templates, any recipient, deliverability tools).
